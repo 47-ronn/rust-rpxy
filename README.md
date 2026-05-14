@@ -8,6 +8,68 @@
 
 > **Work-in-progress project that is being evolved.**
 
+---
+
+## This Fork (`47-ron/rust-rpxy`)
+
+This fork of [`junkurihara/rust-rpxy`](https://github.com/junkurihara/rust-rpxy) ships three production fixes on top of the upstream `develop` branch.
+
+### Download prebuilt binary
+
+```bash
+curl -L https://github.com/47-ron/rust-rpxy/releases/latest/download/rpxy-x86_64-unknown-linux-gnu \
+  -o /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
+chmod +x /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
+systemctl restart rpxy
+```
+
+### What's different
+
+#### 1. ACME rate-limit fix — stop hammering Let's Encrypt on 429
+
+**Problem:** When Let's Encrypt returns a `429 rateLimited` response it includes a precise `retry after YYYY-MM-DD HH:MM:SS UTC` timestamp. Upstream rpxy ignored this and used a generic exponential backoff that fired every ~60 seconds, burning all 5 allowed failed-authorizations per hour within minutes.
+
+**Fix** (`submodules/rustls-acme/src/state.rs`): parse the `retry after` timestamp from the 429 body and sleep exactly until that moment. Falls back to the existing exponential backoff for all other errors.
+
+Covered by 7 unit tests: future timestamp, past timestamp, non-429, missing `retry after`, malformed timestamp, real LE body, empty body.
+
+#### 2. TLS private key file permissions fix — 0644 → 0600
+
+**Problem:** Cached certificate/key files written by older versions have mode `0644` (world-readable). rpxy logs a warning on every startup but never fixed the permissions.
+
+**Fix** (`rpxy-acme/src/dir_cache.rs`):
+- `write_file_secure` now calls `set_permissions(0o600)` after every write, correcting pre-existing loose files.
+- `read_if_exist` checks and corrects permissions on load — warning disappears on first restart without waiting for cert renewal.
+
+#### 3. Per-app `blocked_paths` — block scanner and malicious requests
+
+**New feature**: each app in `config.toml` can declare a list of path substrings to block. Matched requests receive `403 Forbidden` before being forwarded to the backend.
+
+```toml
+[apps.myapp]
+server_name = 'example.com'
+reverse_proxy = [{ upstream = [{ location = 'localhost:3000' }] }]
+tls = { acme = true }
+blocked_paths = [
+  # WordPress probes
+  "wp-admin", "wp-login", "wp-config", "wp-content", "xmlrpc.php",
+  # PHP scanners
+  ".php", "phpinfo", "phpmyadmin",
+  # Sensitive file exposure
+  ".env", ".git", ".aws", ".ds_store",
+  # Path traversal
+  "../", "%2e%2e",
+  # Web shells
+  "shell.php", "c99.php", "webshell",
+  # DB admin tools
+  "adminer", "phpmyadmin", "pma",
+]
+```
+
+Matching is **case-insensitive substring** on the request path. The check runs before upstream selection, so blocked requests never reach the backend. All existing `config.toml` files continue to work unchanged — `blocked_paths` is optional.
+
+---
+
 > [!NOTE]
 > This project is an HTTP (i.e., Layer 7) reverse-proxy. If you are looking for a TCP/UDP (i.e., Layer 4) reverse-proxy, please check my other project [`rpxy-l4`](https://github.com/junkurihara/rust-rpxy-l4).
 
