@@ -173,6 +173,8 @@ pub struct AppConfig {
   pub server_name: String,
   pub reverse_proxy: Vec<ReverseProxyConfig>,
   pub tls: Option<TlsConfig>,
+  /// Case-insensitive substrings to block in request paths. Matched requests get 403.
+  pub blocked_paths: Vec<String>,
 }
 
 /// Configuration parameters for single reverse proxy corresponding to the path

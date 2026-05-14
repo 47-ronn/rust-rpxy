@@ -250,6 +250,8 @@ pub struct Application {
   pub server_name: Option<String>,
   pub reverse_proxy: Option<Vec<ReverseProxyOption>>,
   pub tls: Option<TlsOption>,
+  /// Case-insensitive substrings; requests whose path contains any entry are blocked with 403.
+  pub blocked_paths: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug, Default, PartialEq, Eq, Clone)]
@@ -608,6 +610,7 @@ impl Application {
       server_name: server_name_string.to_owned(),
       reverse_proxy: reverse_proxy_config,
       tls: tls_config,
+      blocked_paths: self.blocked_paths.clone().unwrap_or_default(),
     })
   }
 }

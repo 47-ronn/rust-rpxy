@@ -35,9 +35,9 @@ fn create_dir_secure(dir: &Path) -> std::io::Result<()> {
   builder.create(dir)
 }
 
-/// Write `contents` to `path`, creating it with mode `FILE_MODE` on Unix if it
-/// did not already exist. If the file existed, its mode is preserved (the
-/// content is truncated and overwritten in place).
+/// Write `contents` to `path` and ensure the file has mode `FILE_MODE` on Unix.
+/// The mode is set explicitly after writing so that existing files with looser
+/// permissions (e.g. 0644 left by older versions) are always tightened to 0600.
 fn write_file_secure(path: &Path, contents: &[u8]) -> std::io::Result<()> {
   let mut opts = std::fs::OpenOptions::new();
   opts.write(true).create(true).truncate(true);
@@ -48,6 +48,11 @@ fn write_file_secure(path: &Path, contents: &[u8]) -> std::io::Result<()> {
   }
   let mut f = opts.open(path)?;
   f.write_all(contents)?;
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(FILE_MODE))?;
+  }
   Ok(())
 }
 
@@ -78,7 +83,21 @@ impl DirCache {
       FileType::Cert => &self.cert_dir,
     };
     let file_path = subdir.join(file);
-    match unblock(move || std::fs::read(file_path)).await {
+    match unblock(move || {
+      let content = std::fs::read(&file_path)?;
+      // Fix permissions on files that were created with too-permissive modes by older versions.
+      #[cfg(unix)]
+      {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&file_path)?.permissions().mode() & 0o777;
+        if mode != FILE_MODE {
+          std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(FILE_MODE))?;
+        }
+      }
+      Ok::<Vec<u8>, std::io::Error>(content)
+    })
+    .await
+    {
       Ok(content) => Ok(Some(content)),
       Err(err) => match err.kind() {
         ErrorKind::NotFound => Ok(None),
@@ -218,7 +237,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn write_preserves_existing_file_mode_on_overwrite() {
+  async fn write_fixes_existing_file_mode_on_overwrite() {
     let tmp = tempdir().expect("tempdir");
     let cache = DirCache::new(tmp.path(), "example.com");
 
@@ -234,8 +253,8 @@ mod tests {
 
     let file_mode = mode_of(&target);
     assert_eq!(
-      file_mode, 0o644,
-      "pre-existing file mode must be preserved, got {:o}",
+      file_mode, 0o600,
+      "overwrite must fix loose permissions to 0600, got {:o}",
       file_mode
     );
     let body = std::fs::read(&target).expect("read");

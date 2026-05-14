@@ -145,6 +145,15 @@ where
     // Find reverse proxy for given path and choose one of upstream host
     // Longest prefix match
     let path = req.uri().path();
+
+    // Block paths matching any configured pattern (case-insensitive substring)
+    if !backend_app.blocked_paths.is_empty() {
+      let path_lower = path.to_ascii_lowercase();
+      if let Some(matched) = backend_app.blocked_paths.iter().find(|pat| path_lower.contains(pat.as_str())) {
+        return Err(HttpError::BlockedPath(matched.clone()));
+      }
+    }
+
     let upstream_candidates = backend_app.path_manager.get(path).ok_or(HttpError::NoUpstreamCandidates)?;
 
     // Upgrade in request header

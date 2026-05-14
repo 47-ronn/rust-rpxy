@@ -1,0 +1,80 @@
+name: Build and Release Binary
+
+on:
+  push:
+    tags:
+      - 'v*-fix*'
+      - 'v*-ron*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.12.1-fix1)'
+        required: true
+        default: 'v0.12.1-fix1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Rename binary
+        run: cp target/release/rpxy rpxy-x86_64-unknown-linux-gnu
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body: |
+            ## Fixes & Features
+
+            - **Fix**: ACME rate-limit — honour Let's Encrypt `retry after` timestamp on 429, stop hammering every 60s
+            - **Fix**: TLS private key files now saved with mode `0600`; existing `0644` files corrected on first read
+            - **Feature**: per-app `blocked_paths` in `config.toml` — returns 403 on scanner/malicious URL patterns (WordPress probes, PHP shells, `.env`, `.git`, path traversal, etc.)
+
+            ## Download
+
+            `rpxy-x86_64-unknown-linux-gnu` — drop-in replacement, built for Linux x86_64.
+
+            ```bash
+            curl -L https://github.com/47-ron/rust-rpxy/releases/latest/download/rpxy-x86_64-unknown-linux-gnu \
+              -o /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
+            chmod +x /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
+            systemctl restart rpxy
+            ```
+          files: rpxy-x86_64-unknown-linux-gnu

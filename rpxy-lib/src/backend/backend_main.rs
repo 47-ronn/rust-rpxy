@@ -28,6 +28,9 @@ pub struct BackendApp {
   #[builder(default)]
   #[allow(unused)]
   pub mutual_tls: Option<bool>,
+  /// case-insensitive path substrings that trigger a 403 response
+  #[builder(default)]
+  pub blocked_paths: std::sync::Arc<Vec<String>>,
 }
 impl<'a> BackendAppBuilder {
   pub fn server_name(&mut self, server_name: impl Into<Cow<'a, str>>) -> &mut Self {
@@ -51,10 +54,18 @@ impl TryFrom<&AppConfig> for BackendApp {
   fn try_from(app_config: &AppConfig) -> Result<Self, Self::Error> {
     let mut backend_builder = BackendAppBuilder::default();
     let path_manager = PathManager::try_from(app_config)?;
+    let blocked = std::sync::Arc::new(
+      app_config
+        .blocked_paths
+        .iter()
+        .map(|s| s.to_ascii_lowercase())
+        .collect::<Vec<_>>(),
+    );
     backend_builder
       .app_name(app_config.app_name.clone())
       .server_name(app_config.server_name.clone())
-      .path_manager(path_manager);
+      .path_manager(path_manager)
+      .blocked_paths(blocked);
     // TLS settings and build backend instance
     let backend = if app_config.tls.is_none() {
       backend_builder.build()?

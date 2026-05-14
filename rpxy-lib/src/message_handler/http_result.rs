@@ -32,10 +32,8 @@ pub enum HttpError {
 
   #[error("Failed to upgrade connection: {0}")]
   FailedToUpgrade(String),
-  // #[error("Request does not have an upgrade extension")]
-  // NoUpgradeExtensionInRequest,
-  // #[error("Response does not have an upgrade extension")]
-  // NoUpgradeExtensionInResponse,
+  #[error("Request path is blocked: {0}")]
+  BlockedPath(String),
   #[error(transparent)]
   Other(#[from] anyhow::Error),
 }
@@ -43,7 +41,6 @@ pub enum HttpError {
 impl From<HttpError> for StatusCode {
   fn from(e: HttpError) -> StatusCode {
     match e {
-      // HttpError::NoHostInRequestHeader => StatusCode::BAD_REQUEST,
       HttpError::InvalidHostInRequestHeader => StatusCode::BAD_REQUEST,
       HttpError::SniHostInconsistency => StatusCode::MISDIRECTED_REQUEST,
       HttpError::NoMatchingBackendApp => StatusCode::SERVICE_UNAVAILABLE,
@@ -54,8 +51,7 @@ impl From<HttpError> for StatusCode {
       HttpError::FailedToGenerateDownstreamResponse(_) => StatusCode::INTERNAL_SERVER_ERROR,
       HttpError::FailedToUpgrade(_) => StatusCode::INTERNAL_SERVER_ERROR,
       HttpError::FailedToGetResponseFromBackend(_) => StatusCode::BAD_GATEWAY,
-      // HttpError::NoUpgradeExtensionInRequest => StatusCode::BAD_REQUEST,
-      // HttpError::NoUpgradeExtensionInResponse => StatusCode::BAD_GATEWAY,
+      HttpError::BlockedPath(_) => StatusCode::FORBIDDEN,
       _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
   }
