@@ -5,7 +5,7 @@ use crate::{
 };
 use ahash::HashMap;
 use rpxy_lib::{
-  AppConfig, AppConfigList, ProxyConfig, ReverseProxyConfig, TlsConfig, UpstreamUri,
+  AppConfig, AppConfigList, ProxyConfig, RedirectConfig, ReverseProxyConfig, TlsConfig, UpstreamUri,
   reexports::{IpNet, Uri},
 };
 use rpxy_trusted_proxies::resolve_trusted_proxy_entries;
@@ -153,7 +153,9 @@ impl ConfigTomlExt for ConfigToml {
 
     for app in apps.0.values() {
       let server_name = app.server_name.as_ref().ok_or(anyhow!("Missing server_name"))?;
-      let reverse_proxy = app.reverse_proxy.as_ref().ok_or(anyhow!("Missing reverse_proxy"))?;
+      let Some(reverse_proxy) = app.reverse_proxy.as_ref() else {
+        continue;
+      };
       for rpo in reverse_proxy {
         if rpo.load_balance.as_deref() == Some(LOAD_BALANCE_STICKY_ROUND_ROBIN) {
           uses_sticky = true;
@@ -252,6 +254,12 @@ pub struct Application {
   pub tls: Option<TlsOption>,
   /// Case-insensitive substrings; requests whose path contains any entry are blocked with 403.
   pub blocked_paths: Option<Vec<String>>,
+  /// Absolute URL to redirect all requests to (e.g. `https://new.example.com`). Turns the app into a pure redirect.
+  pub redirect_to: Option<String>,
+  /// Redirect status code; defaults to 301. Allowed: 301, 302, 303, 307, 308.
+  pub redirect_status: Option<u16>,
+  /// If true (default), the original path and query are appended to `redirect_to`.
+  pub redirect_preserve_path: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Default, PartialEq, Eq, Clone)]
@@ -564,8 +572,14 @@ impl Application {
   pub fn build_app_config(&self, app_name: &str) -> std::result::Result<AppConfig, anyhow::Error> {
     let server_name_string = self.server_name.as_ref().ok_or(anyhow!("Missing server_name"))?;
 
-    // reverse proxy settings
-    let reverse_proxy_config: Vec<ReverseProxyConfig> = self.try_into()?;
+    // reverse proxy settings (optional when the app is a pure redirect)
+    let reverse_proxy_config: Vec<ReverseProxyConfig> = if self.reverse_proxy.is_some() {
+      self.try_into()?
+    } else if self.redirect_to.is_some() {
+      Vec::new()
+    } else {
+      return Err(anyhow!("Missing reverse_proxy"));
+    };
 
     // validate load balance + health check combinations
     #[cfg(feature = "health-check")]
@@ -605,12 +619,41 @@ impl Application {
       None
     };
 
+    // redirect settings
+    let redirect = if let Some(target) = self.redirect_to.as_ref() {
+      let parsed = target
+        .parse::<Uri>()
+        .map_err(|e| anyhow!("Invalid redirect_to '{}': {}", target, e))?;
+      ensure!(parsed.scheme().is_some(), "redirect_to must include a scheme, e.g. https://");
+      ensure!(parsed.authority().is_some(), "redirect_to must include a host");
+
+      let status = self.redirect_status.unwrap_or(301);
+      ensure!(
+        matches!(status, 301 | 302 | 303 | 307 | 308),
+        "redirect_status must be one of 301, 302, 303, 307, 308 (got {})",
+        status
+      );
+
+      Some(RedirectConfig {
+        target: target.clone(),
+        status,
+        preserve_path: self.redirect_preserve_path.unwrap_or(true),
+      })
+    } else {
+      ensure!(
+        self.redirect_status.is_none() && self.redirect_preserve_path.is_none(),
+        "redirect_status/redirect_preserve_path require redirect_to to be set"
+      );
+      None
+    };
+
     Ok(AppConfig {
       app_name: app_name.to_owned(),
       server_name: server_name_string.to_owned(),
       reverse_proxy: reverse_proxy_config,
       tls: tls_config,
       blocked_paths: self.blocked_paths.clone().unwrap_or_default(),
+      redirect,
     })
   }
 }
@@ -787,6 +830,7 @@ mod tests {
           health_check: None,
         }]),
         tls: None,
+        ..Default::default()
       },
     );
 
@@ -1151,6 +1195,7 @@ mod tests {
         health_check: None,
       }]),
       tls: None,
+      ..Default::default()
     };
     let result: Result<Vec<ReverseProxyConfig>, _> = (&app).try_into();
     assert!(result.is_err());
@@ -1163,6 +1208,36 @@ mod tests {
   fn sticky_cookie_secret_not_required_without_sticky_routes() {
     let config = config_with_reverse_proxy(Some("round_robin"), None, None);
     assert!(config.validate_and_build_sticky_cookie_secret().unwrap().is_none());
+  }
+
+  #[cfg(feature = "sticky-cookie")]
+  #[test]
+  fn pure_redirect_app_requires_no_reverse_proxy() {
+    let mut apps = ahash::HashMap::default();
+    apps.insert(
+      "oldsite".to_string(),
+      Application {
+        server_name: Some("old.example.com".to_string()),
+        redirect_to: Some("https://new.example.com".to_string()),
+        tls: None,
+        ..Default::default()
+      },
+    );
+    let config = ConfigToml {
+      listen_port: Some(8080),
+      apps: Some(Apps(apps)),
+      ..Default::default()
+    };
+
+    assert!(config.validate_and_build_sticky_cookie_secret().unwrap().is_none());
+
+    let app = config.apps.as_ref().unwrap().0.get("oldsite").unwrap();
+    let app_config = app.build_app_config("oldsite").unwrap();
+    assert!(app_config.reverse_proxy.is_empty());
+    let redirect = app_config.redirect.unwrap();
+    assert_eq!(redirect.target, "https://new.example.com");
+    assert_eq!(redirect.status, 301);
+    assert!(redirect.preserve_path);
   }
 
   #[cfg(feature = "sticky-cookie")]

@@ -206,3 +206,20 @@ registry_path = "./acme_registry"       # optional. default is "./acme_registry"
 # [experimental.tcp_recv_proxy_protocol]
 # trusted_proxies = ["127.0.0.1/32", "10.0.0.0/8"]  # required, non-empty CIDR list. IPv4 and/or IPv6. Example: ["127.0.0.1/32", "::1/128"]
 # timeout = 50  # optional, milliseconds. Default 50ms. 0 = fallback to 5s (not recommended).
+
+###################################################################
+# Example: pure redirect app (e.g. old domain -> new domain)
+#
+# [apps.oldsite]
+# server_name = 'old.example.com'
+# redirect_to = 'https://new.example.com'   # required; must be absolute (scheme + host)
+# redirect_status = 301                       # optional, default 301; one of 301/302/303/307/308
+# redirect_preserve_path = true               # optional, default true; append original path+query
+# tls = { https_redirection = false, tls_cert_path = '...', tls_cert_key_path = '...' }
+#
+# Notes:
+#  - reverse_proxy is NOT required when redirect_to is set.
+#  - The redirect fires for BOTH http and https requests (unlike https_redirection,
+#    which only upgrades cleartext http to https on the same host).
+#  - With redirect_preserve_path = false, every request goes to exactly redirect_to.
+###################################################################

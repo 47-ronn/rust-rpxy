@@ -68,6 +68,23 @@ blocked_paths = [
 
 Matching is **case-insensitive substring** on the request path. The check runs before upstream selection, so blocked requests never reach the backend. All existing `config.toml` files continue to work unchanged — `blocked_paths` is optional.
 
+#### 4. Per-app `redirect_to` — arbitrary 30x redirects (e.g. domain move)
+
+**New feature**: an app can redirect every incoming request to another URL with a configurable status code. Unlike the built-in `https_redirection` (which only upgrades cleartext HTTP to HTTPS on the *same* host), this issues a real redirect to an arbitrary destination for both HTTP and HTTPS.
+
+```toml
+[apps.oldsite]
+server_name = 'old.example.com'
+redirect_to = 'https://new.example.com'   # required; absolute URL (scheme + host)
+redirect_status = 301                       # optional, default 301; one of 301/302/303/307/308
+redirect_preserve_path = true               # optional, default true; append original path + query
+tls = { tls_cert_path = '...', tls_cert_key_path = '...' }
+```
+
+- `reverse_proxy` is **not required** when `redirect_to` is set — the app becomes a pure redirect.
+- With `redirect_preserve_path = true` (default), `GET https://old.example.com/foo?x=1` → `Location: https://new.example.com/foo?x=1`. With `false`, every request goes to exactly `redirect_to`.
+- The target is validated at config load (must have a scheme and host), and the status code is validated against the allowed set. The redirect is a synthetic response built inside rpxy — nothing is forwarded to any backend. Existing configs are unaffected — all three keys are optional.
+
 ---
 
 > [!NOTE]

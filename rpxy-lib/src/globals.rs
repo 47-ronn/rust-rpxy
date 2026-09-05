@@ -175,6 +175,19 @@ pub struct AppConfig {
   pub tls: Option<TlsConfig>,
   /// Case-insensitive substrings to block in request paths. Matched requests get 403.
   pub blocked_paths: Vec<String>,
+  /// Optional synthetic redirect (e.g. old domain -> new domain). Takes precedence over proxying.
+  pub redirect: Option<RedirectConfig>,
+}
+
+/// Configuration for a synthetic HTTP redirect response
+#[derive(PartialEq, Eq, Clone)]
+pub struct RedirectConfig {
+  /// Absolute destination URL, e.g. `https://new.example.com`.
+  pub target: String,
+  /// Redirect status code (301/302/303/307/308).
+  pub status: u16,
+  /// If true, append the original path and query to `target`.
+  pub preserve_path: bool,
 }
 
 /// Configuration parameters for single reverse proxy corresponding to the path

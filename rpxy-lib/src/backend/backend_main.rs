@@ -1,5 +1,5 @@
 use crate::{
-  AppConfig, AppConfigList,
+  AppConfig, AppConfigList, RedirectConfig,
   error::*,
   log::*,
   name_exp::{ByteName, ServerName},
@@ -31,6 +31,9 @@ pub struct BackendApp {
   /// case-insensitive path substrings that trigger a 403 response
   #[builder(default)]
   pub blocked_paths: std::sync::Arc<Vec<String>>,
+  /// optional synthetic redirect; when set, every request to this app gets a 3xx response
+  #[builder(default)]
+  pub redirect: Option<std::sync::Arc<RedirectConfig>>,
 }
 impl<'a> BackendAppBuilder {
   pub fn server_name(&mut self, server_name: impl Into<Cow<'a, str>>) -> &mut Self {
@@ -65,7 +68,8 @@ impl TryFrom<&AppConfig> for BackendApp {
       .app_name(app_config.app_name.clone())
       .server_name(app_config.server_name.clone())
       .path_manager(path_manager)
-      .blocked_paths(blocked);
+      .blocked_paths(blocked)
+      .redirect(app_config.redirect.clone().map(std::sync::Arc::new));
     // TLS settings and build backend instance
     let backend = if app_config.tls.is_none() {
       backend_builder.build()?

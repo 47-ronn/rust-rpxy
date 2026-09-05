@@ -3,7 +3,7 @@ use super::{
   http_log::HttpMessageLog,
   http_result::{HttpError, HttpResult},
   request_ops::InspectParseHost,
-  synthetic_response::{secure_redirection_response, synthetic_error_response},
+  synthetic_response::{custom_redirection_response, secure_redirection_response, synthetic_error_response},
 };
 #[cfg(feature = "sticky-cookie")]
 use crate::backend::StickyCookieConfig;
@@ -128,6 +128,12 @@ where
       }
       None => return Err(HttpError::NoMatchingBackendApp),
     };
+
+    // Custom redirect (e.g. domain move) takes precedence over everything else
+    if let Some(redirect) = backend_app.redirect.as_ref() {
+      debug!("Custom {} redirect to {}", redirect.status, redirect.target);
+      return custom_redirection_response(redirect, &req);
+    }
 
     // Redirect to https if !tls_enabled and redirect_to_https is true
     if !tls_enabled && backend_app.https_redirection.unwrap_or(false) {
