@@ -43,8 +43,10 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Rename binary
-        run: cp target/release/rpxy rpxy-x86_64-unknown-linux-gnu
+      - name: Package binary
+        run: |
+          cp target/release/rpxy rpxy-x86_64-unknown-linux-gnu
+          tar -czf rpxy-x86_64-unknown-linux-gnu.tar.gz rpxy-x86_64-unknown-linux-gnu
 
       - name: Determine tag
         id: tag
@@ -66,15 +68,18 @@ jobs:
             - **Fix**: ACME rate-limit — honour Let's Encrypt `retry after` timestamp on 429, stop hammering every 60s
             - **Fix**: TLS private key files now saved with mode `0600`; existing `0644` files corrected on first read
             - **Feature**: per-app `blocked_paths` in `config.toml` — returns 403 on scanner/malicious URL patterns (WordPress probes, PHP shells, `.env`, `.git`, path traversal, etc.)
+            - **Feature**: per-app `redirect_to` — arbitrary 30x redirects (301/302/303/307/308) for domain moves
+            - **Feature**: `tls-fingerprint` (cargo feature, **on by default**) — injects client JA3/JA4/SNI/ALPN as `X-TLS-*` headers to the backend, enabling downstream browser/bot detection by TLS fingerprint. See [JA4+ spec](https://github.com/FoxIO-LLC/ja4).
 
             ## Download
 
-            `rpxy-x86_64-unknown-linux-gnu` — drop-in replacement, built for Linux x86_64.
+            `rpxy-x86_64-unknown-linux-gnu.tar.gz` — drop-in replacement, built for Linux x86_64 (gzip-compressed tarball containing the single binary).
 
             ```bash
-            curl -L https://github.com/47-ron/rust-rpxy/releases/latest/download/rpxy-x86_64-unknown-linux-gnu \
-              -o /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
-            chmod +x /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
+            curl -L https://github.com/47-ronn/rust-rpxy/releases/latest/download/rpxy-x86_64-unknown-linux-gnu.tar.gz \
+              -o rpxy.tar.gz
+            mkdir -p rpxy && tar -xzf rpxy.tar.gz -C rpxy
+            chmod +x rpxy/rpxy-x86_64-unknown-linux-gnu
             systemctl restart rpxy
             ```
-          files: rpxy-x86_64-unknown-linux-gnu
+          files: rpxy-x86_64-unknown-linux-gnu.tar.gz
