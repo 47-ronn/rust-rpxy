@@ -12,12 +12,12 @@
 
 ## This Fork (`47-ron/rust-rpxy`)
 
-This fork of [`junkurihara/rust-rpxy`](https://github.com/junkurihara/rust-rpxy) ships three production fixes on top of the upstream `develop` branch.
+This fork of [`junkurihara/rust-rpxy`](https://github.com/junkurihara/rust-rpxy) ships production fixes and additional features on top of the upstream `develop` branch.
 
 ### Download prebuilt binary
 
 ```bash
-curl -L https://github.com/47-ron/rust-rpxy/releases/latest/download/rpxy-x86_64-unknown-linux-gnu \
+curl -L https://github.com/47-ronn/rust-rpxy/releases/latest/download/rpxy-x86_64-unknown-linux-gnu \
   -o /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
 chmod +x /usr/local/bin/rpxy-x86_64-unknown-linux-gnu
 systemctl restart rpxy
@@ -84,6 +84,34 @@ tls = { tls_cert_path = '...', tls_cert_key_path = '...' }
 - `reverse_proxy` is **not required** when `redirect_to` is set — the app becomes a pure redirect.
 - With `redirect_preserve_path = true` (default), `GET https://old.example.com/foo?x=1` → `Location: https://new.example.com/foo?x=1`. With `false`, every request goes to exactly `redirect_to`.
 - The target is validated at config load (must have a scheme and host), and the status code is validated against the allowed set. The redirect is a synthetic response built inside rpxy — nothing is forwarded to any backend. Existing configs are unaffected — all three keys are optional.
+
+#### 5. TLS client fingerprint injection (`tls-fingerprint` feature) — JA3/JA4 as `X-TLS-*` headers
+
+**New feature** (cargo feature `tls-fingerprint`, **on by default**): rpxy terminates TLS, so a backend behind rpxy normally sees rpxy's own TLS stack — not the client's. This prevents downstream browser/bot detection by TLS fingerprint (JA3/JA4). When the feature is enabled, rpxy peeks the raw `ClientHello` bytes off the TCP stream *before* rustls consumes them, parses them in pure Rust, computes JA3 (MD5) and JA4 (SHA256-truncated) per the [FoxIO JA4+ spec](https://github.com/FoxIO-LLC/ja4), and injects four headers into the request forwarded to the backend:
+
+| Header | Value |
+|---|---|
+| `X-TLS-JA3` | JA3 MD5 hash, e.g. `90f686ceaef3614132c45627da479a18` |
+| `X-TLS-JA4` | JA4 hash, e.g. `t13d1517h2_8daaf6152771_cb7bf5808d99` |
+| `X-TLS-SNI` | SNI server_name (if present) |
+| `X-TLS-ALPN` | ALPN protocols, comma-separated (e.g. `h2,http/1.1`) |
+
+A downstream backend then reads these headers (only trusting them if `request.socket.remoteAddress` is in a configured trusted-proxy list) to do browser/bot detection — exactly what Cloudflare Bot Management does, but on your own infrastructure.
+
+This is what the [JA4+ database](https://ja4db.com/) lists as Chrome's TLS fingerprint:
+
+```
+Chrome (TCP):  JA4 = t13d1517h2_8daaf6152771_cb7bf5808d99
+Firefox (TCP): JA4 = t13d1517h2_8daaf6152771_3cbfd9057e0d
+```
+
+The parser is verified against a real captured Firefox ClientHello — same JA3 and JA4 as `read-tls-client-hello` on the Node.js side.
+
+**Build:** the feature is in the `default` set, so a plain `cargo build --release` includes it. To disable (e.g. for a minimal build), use `--no-default-features --features=http3-quinn,cache,rustls-backend,sticky-cookie,acme,post-quantum,proxy-protocol,health-check`.
+
+**Limitations:**
+- HTTP/3 (QUIC) path currently passes `None` — parsing the QUIC ClientHello for JA3/JA4 is left as future work.
+- The backend MUST validate that the request came from a trusted rpxy IP before trusting `X-TLS-*` headers — otherwise a client can forge them.
 
 ---
 

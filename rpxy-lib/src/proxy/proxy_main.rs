@@ -38,6 +38,7 @@ async fn serve_request<T>(
   listen_addr: SocketAddr,
   tls_enabled: bool,
   tls_server_name: Option<ServerName>,
+  #[cfg(feature = "tls-fingerprint")] tls_fingerprint: Option<crate::tls_fingerprint::Fingerprint>,
 ) -> RpxyResult<Response<ResponseBody>>
 where
   T: Send + Sync + Connect + Clone,
@@ -49,6 +50,8 @@ where
       listen_addr,
       tls_enabled,
       tls_server_name,
+      #[cfg(feature = "tls-fingerprint")]
+      tls_fingerprint,
     )
     .await
 }
@@ -59,6 +62,12 @@ struct TlsHandshakeResult {
   stream: TokioIo<tokio_rustls::server::TlsStream<TcpStream>>,
   /// Server name from SNI in ClientHello, used for logging and metrics tagging
   server_name: ServerName,
+  /// Client TLS fingerprint (JA3/JA4/SNI/ALPN) parsed from the raw ClientHello
+  /// bytes peeked off the TCP stream before rustls consumed them. Forwarded to
+  /// the backend as X-TLS-* headers so a downstream service can do browser/bot
+  /// detection (rpxy terminates TLS, so the backend otherwise sees rpxy's TLS).
+  #[cfg(feature = "tls-fingerprint")]
+  tls_fingerprint: Option<crate::tls_fingerprint::Fingerprint>,
   #[cfg(feature = "acme")]
   /// Whether the TLS handshake is for ACME TLS ALPN challenge, which requires special handling to shutdown immediately after handshake completes
   is_handshake_acme: bool, // for shutdown just after TLS handshake
@@ -70,6 +79,32 @@ async fn serve_tls_handshake(
   #[cfg(feature = "acme")] server_configs_acme_challenge: Arc<HashMap<String, Arc<rustls::ServerConfig>>>,
   server_crypto_map: Arc<HashMap<ServerName, Arc<rustls::ServerConfig>>>,
 ) -> RpxyResult<TlsHandshakeResult> {
+  // Peek the raw ClientHello bytes off the TCP stream *before* rustls consumes
+  // them, and parse the JA3/JA4 fingerprint. peek() does not consume, so the
+  // subsequent LazyConfigAcceptor::new(raw_stream) still sees the same bytes.
+  #[cfg(feature = "tls-fingerprint")]
+  let tls_fingerprint = {
+    let mut peek_buf = [0u8; 4096];
+    let n = raw_stream.peek(&mut peek_buf).await.unwrap_or(0);
+    if n > 0 {
+      match crate::tls_fingerprint::parse_client_hello(&peek_buf[..n]) {
+        Ok(fp) => {
+          debug!(
+            "ClientHello JA3={} JA4={} SNI={:?}",
+            fp.ja3, fp.ja4, fp.server_name
+          );
+          Some(fp)
+        }
+        Err(e) => {
+          debug!("Failed to parse ClientHello for fingerprint: {e}");
+          None
+        }
+      }
+    } else {
+      None
+    }
+  };
+
   let acceptor = tokio_rustls::LazyConfigAcceptor::new(tokio_rustls::rustls::server::Acceptor::default(), raw_stream).await;
   if let Err(e) = acceptor {
     return Err(RpxyError::FailedToTlsHandshake(e.to_string()));
@@ -126,6 +161,8 @@ async fn serve_tls_handshake(
   Ok(TlsHandshakeResult {
     stream,
     server_name: server_name.unwrap(),
+    #[cfg(feature = "tls-fingerprint")]
+    tls_fingerprint,
     #[cfg(feature = "acme")]
     is_handshake_acme,
   })
@@ -245,8 +282,13 @@ where
   T: Send + Sync + Connect + Clone + 'static,
 {
   /// Serves requests from clients
-  fn serve_connection<I>(&self, stream: I, peer_addr: SocketAddr, tls_server_name: Option<ServerName>)
-  where
+  fn serve_connection<I>(
+    &self,
+    stream: I,
+    peer_addr: SocketAddr,
+    tls_server_name: Option<ServerName>,
+    #[cfg(feature = "tls-fingerprint")] tls_fingerprint: Option<crate::tls_fingerprint::Fingerprint>,
+  ) where
     I: Read + Write + Send + Unpin + 'static,
   {
     let request_count = self.globals.request_count.clone();
@@ -273,6 +315,8 @@ where
             listening_on,
             tls_enabled,
             tls_server_name.clone(),
+            #[cfg(feature = "tls-fingerprint")]
+            tls_fingerprint.clone(),
           )
         }),
       );
@@ -297,7 +341,7 @@ where
       #[cfg(not(feature = "proxy-protocol"))]
       while let Ok((stream, client_addr)) = tcp_listener.accept().await {
         trace!("Accepted TCP connection from {client_addr}");
-        self.serve_connection(TokioIo::new(stream), client_addr, None);
+        self.serve_connection(TokioIo::new(stream), client_addr, None, #[cfg(feature="tls-fingerprint")] None);
       }
       #[cfg(feature = "proxy-protocol")]
       {
@@ -326,12 +370,12 @@ where
                   return;
                 }
               };
-              self_inner.serve_connection(TokioIo::new(stream), real_addr, None);
+              self_inner.serve_connection(TokioIo::new(stream), real_addr, None, #[cfg(feature="tls-fingerprint")] None);
             });
             continue;
           }
           // If inbound PROXY protocol is not enabled, serve connection directly with peer address from TCP accept
-          self.serve_connection(TokioIo::new(stream), client_addr, None);
+          self.serve_connection(TokioIo::new(stream), client_addr, None, #[cfg(feature="tls-fingerprint")] None);
         }
       }
 
@@ -512,6 +556,8 @@ where
           Ok(TlsHandshakeResult {
             mut stream,
             server_name,
+            #[cfg(feature = "tls-fingerprint")]
+            tls_fingerprint,
             is_handshake_acme,
           }) => {
             if is_handshake_acme {
@@ -520,7 +566,13 @@ where
               stream.inner_mut().shutdown().await.ok();
               return;
             }
-            self_inner.serve_connection(stream, client_addr, Some(server_name));
+            self_inner.serve_connection(
+              stream,
+              client_addr,
+              Some(server_name),
+              #[cfg(feature = "tls-fingerprint")]
+              tls_fingerprint,
+            );
           }
           Err(e) => {
             error!("{}", e);
@@ -531,8 +583,19 @@ where
       #[cfg(not(feature = "acme"))]
       {
         match tls_handshake_result {
-          Ok(TlsHandshakeResult { stream, server_name }) => {
-            self_inner.serve_connection(stream, client_addr, Some(server_name));
+          Ok(TlsHandshakeResult {
+            stream,
+            server_name,
+            #[cfg(feature = "tls-fingerprint")]
+            tls_fingerprint,
+          }) => {
+            self_inner.serve_connection(
+              stream,
+              client_addr,
+              Some(server_name),
+              #[cfg(feature = "tls-fingerprint")]
+              tls_fingerprint,
+            );
           }
           Err(e) => {
             error!("{}", e);

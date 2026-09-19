@@ -151,6 +151,8 @@ where
         self.listener_spec.listening_on,
         self.listener_spec.tls_enabled(),
         Some(tls_server_name),
+        #[cfg(feature = "tls-fingerprint")]
+        None, // HTTP/3 path doesn't currently parse the QUIC ClientHello for JA3/JA4.
       )
       .await?;
 

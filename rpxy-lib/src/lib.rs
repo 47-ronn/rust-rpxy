@@ -9,6 +9,8 @@ mod log;
 mod message_handler;
 mod name_exp;
 mod proxy;
+#[cfg(feature = "tls-fingerprint")]
+pub mod tls_fingerprint;
 /* ------------------------------------------------ */
 use crate::{
   // crypto::build_cert_reloader,

@@ -62,13 +62,23 @@ where
     listen_addr: SocketAddr,
     tls_enabled: bool,
     tls_server_name: Option<ServerName>,
+    #[cfg(feature = "tls-fingerprint")] tls_fingerprint: Option<crate::tls_fingerprint::Fingerprint>,
   ) -> RpxyResult<Response<ResponseBody>> {
     // preparing log data
     let mut log_data = HttpMessageLog::from(&req);
     log_data.client_addr(&client_addr);
 
     let http_result = self
-      .handle_request_inner(&mut log_data, req, client_addr, listen_addr, tls_enabled, tls_server_name)
+      .handle_request_inner(
+        &mut log_data,
+        req,
+        client_addr,
+        listen_addr,
+        tls_enabled,
+        tls_server_name,
+        #[cfg(feature = "tls-fingerprint")]
+        tls_fingerprint,
+      )
       .await;
 
     // passthrough or synthetic response
@@ -96,7 +106,44 @@ where
     listen_addr: SocketAddr,
     tls_enabled: bool,
     tls_server_name: Option<ServerName>,
+    #[cfg(feature = "tls-fingerprint")] tls_fingerprint: Option<crate::tls_fingerprint::Fingerprint>,
   ) -> HttpResult<Response<ResponseBody>> {
+    // Inject the parsed client TLS fingerprint (JA3/JA4/SNI/ALPN) as X-TLS-*
+    // headers so a downstream backend behind rpxy can do browser/bot detection
+    // even though rpxy terminates TLS and the backend otherwise sees rpxy's TLS.
+    #[cfg(feature = "tls-fingerprint")]
+    if let Some(fp) = tls_fingerprint.as_ref() {
+      let headers = req.headers_mut();
+      if !fp.ja3.is_empty() {
+        if let Ok(v) = http::HeaderValue::from_str(&fp.ja3) {
+          headers.insert("x-tls-ja3", v);
+        }
+      }
+      if !fp.ja4.is_empty() {
+        if let Ok(v) = http::HeaderValue::from_str(&fp.ja4) {
+          headers.insert("x-tls-ja4", v);
+        }
+      }
+      if let Some(sni) = fp.server_name.as_ref() {
+        if let Ok(v) = http::HeaderValue::from_str(sni) {
+          headers.insert("x-tls-sni", v);
+        }
+      }
+      // ALPN joined by comma (e.g. "h2,http/1.1"). Header values are limited
+      // to visible ASCII; unknown bytes are skipped.
+      let alpn_str: String = fp
+        .alpn
+        .iter()
+        .filter_map(|a| std::str::from_utf8(a).ok())
+        .collect::<Vec<_>>()
+        .join(",");
+      if !alpn_str.is_empty() {
+        if let Ok(v) = http::HeaderValue::from_str(&alpn_str) {
+          headers.insert("x-tls-alpn", v);
+        }
+      }
+    }
+
     // Here we start to inspect and parse with server_name
     let server_name = req
       .inspect_parse_host()
